@@ -249,7 +249,7 @@ def calc_score(mol_lig, mol_prot, clf):
 
 
 def get_format(ligand_file) -> str:
-    return Path(ligand_file).suffix
+    return Path(ligand_file).suffix[1:]
 
 
 def calc_batch(mol_prot, mol_ligs, output_file, clf):
