@@ -1,3 +1,6 @@
+from pathlib import Path
+import tempfile
+import argparse
 import copy
 import os
 import sys
@@ -27,11 +30,7 @@ def add_xyz(ligu):
 
 
 def cal_dist(a, b):
-    a1 = np.array(a)
-    b1 = np.array(b)
-    dist = np.linalg.norm(a1 - b1)
-    dist = round(dist, 2)
-    return dist
+    return round(np.linalg.norm(np.array(a) - np.array(b)), 2)
 
 
 def get_min_dist(am, ligu):
@@ -40,43 +39,47 @@ def get_min_dist(am, ligu):
     return min(ligu["dist"])
 
 
-class GetPocket:
-    def __init__(self, ligand_file, protein_file, pdb_id):
+class PocketExtractor:
+    def __init__(self, protein_file: Path, ligand_file: Path) -> None:
         """
-        ligand_file: format mol
         protein_file: format pdb
+        ligand_file: format mol
         """
-        self.ligand_file = ligand_file
-        self.protein_file = protein_file
-        self.pdb_id = pdb_id
-        self.ligand_mol = Chem.MolFromMolFile(ligand_file, removeHs=False)
-        self.pocket_mol, self.temp_file = self.process_pro_and_lig()
-        self.pocket_path = os.path.basename(protein_file).split(".")[0] + "_pocket.pdb"
-        Chem.MolToPDBFile(self.pocket_mol, self.pocket_path)
+        if not protein_file.exists():
+            raise ValueError(f"{protein_file} does not exist.")
+        if not ligand_file.exists():
+            raise ValueError(f"{ligand_file} does not exist.")
 
-    def process_pro_and_lig(self):
+        self.protein_file = protein_file
+        self.ligand_file = ligand_file
+
+        self.ligand_mol = Chem.MolFromMolFile(ligand_file, removeHs=False)
+        self.pocket_mol = self._process_pro_and_lig()
+
+    def save_pocket(self, output_path: Path) -> None:
+        Chem.MolToPDBFile(self.pocket_mol, self.output_path)
+
+    def _process_pro_and_lig(self):
         ppdb = PandasPdb()
         ppdb.read_pdb(self.protein_file)
         protein_biop = ppdb.df["ATOM"]
 
-        pro_cut, pros_near_lig = self.select_cut_residue(
-            protein_biop, self.ligand_mol, cut=5.5
-        )
+        pro_cut, _ = self._select_cut_residue(protein_biop, self.ligand_mol, cut=5.5)
 
         ppdb.df["ATOM"] = pro_cut
-        newmolname = str(randint(1, 1000000)).zfill(10)
-        name = f"pocket_{pdb_id}_{newmolname}.pdb"
 
-        ppdb.to_pdb(path=name, records=["ATOM"])
-        pmol = Chem.MolFromPDBFile(name, removeHs=False)
-        return pmol, name
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_pdb = Path(tmp_dir) / "tmp.pdb"
+            ppdb.to_pdb(path=str(tmp_pdb), records=["ATOM"])
 
-    def select_cut_residue(self, protein_biop, ligand_mol, cut=5.0):
+            return Chem.MolFromPDBFile(tmp_pdb, removeHs=False)
+
+    def _select_cut_residue(self, protein_biop, ligand_mol, cut=5.0):
         """
         pro: biopandas DataFrame
         lig: rdkit mol
         """
-        pro = self.cal_pro_min_dist(protein_biop, ligand_mol)
+        pro = self._cal_pro_min_dist(protein_biop, ligand_mol)
 
         pro["chain_rid"] = pro.apply(
             lambda row: str(row["chain_id"]) + str(row["residue_number"]), axis=1
@@ -88,17 +91,17 @@ class GetPocket:
         pro = pro.drop(["chain_rid"], axis=1)
         return pro, pros_near_lig
 
-    def get_ligu(self, ligand_mol):
+    def _get_ligu(self, ligand_mol):
         mol_ligand_conf = ligand_mol.GetConformers()[0]
         pos = mol_ligand_conf.GetPositions()
         df = pd.DataFrame(pos)
         df.columns = ["x_coord", "y_coord", "z_coord"]
         return df
 
-    def cal_pro_min_dist(self, protein_biop, ligand_mol):
+    def _cal_pro_min_dist(self, protein_biop, ligand_mol):
         protein_biop = add_xyz(protein_biop)
 
-        ligu = self.get_ligu(ligand_mol)
+        ligu = self._get_ligu(ligand_mol)
         ligu = add_xyz(ligu)
         protein_biop["min_dist"] = protein_biop.apply(
             lambda row: get_min_dist(row["xyz"], ligu), axis=1
@@ -107,7 +110,13 @@ class GetPocket:
 
 
 if __name__ == "__main__":
-    protein_file = sys.argv[1]
-    ligand_file = sys.argv[2]
-    pdb_id = sys.argv[3]
-    get_pocket = GetPocket(ligand_file, protein_file, pdb_id)
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--protein", type=Path, required=True)
+    parser.add_argument("--ligand", type=Path, required=True)
+    parser.add_argument("--output_pocket", type=Path, required=True)
+
+    args = parser.parse_args()
+
+    pocket_extractor = PocketExtractor(args.protein, args.ligand)
+    pocket_extractor.save_pocket(args.output_pocket)
