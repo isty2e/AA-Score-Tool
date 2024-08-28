@@ -1,5 +1,5 @@
 import argparse
-import os
+from pathlib import Path
 
 import numpy as np
 from rdkit import Chem
@@ -248,8 +248,8 @@ def calc_score(mol_lig, mol_prot, clf):
     return clf.predict(descriptors)
 
 
-def get_format(ligand_file):
-    return os.path.basename(ligand_file).split(".")[1]
+def get_format(ligand_file) -> str:
+    return Path(ligand_file).suffix
 
 
 def calc_batch(mol_prot, mol_ligs, output_file, clf):
