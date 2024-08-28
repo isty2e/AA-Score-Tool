@@ -1,13 +1,13 @@
 import numpy as np
+from schrodinger.structure import PDBWriter, StructureReader
 from scipy.spatial.distance import cdist
-from schrodinger.structure import StructureReader, StructureWriter, PDBWriter
-import argparse
+
 
 def get_pocket_atomidx(protein_coords, ligand_coords):
     distacne_matrics = cdist(protein_coords, ligand_coords)
     pocket_atoms_id = list(set(np.where(distacne_matrics <= 5.5)[0]))
-    pocket_atoms_idx = [idx+1 for idx in pocket_atoms_id]
-    return pocket_atoms_idx
+    return [idx + 1 for idx in pocket_atoms_id]
+
 
 def get_residue_atomidx(pocket_atoms_idx, prot):
     atoms_idx = []
@@ -16,8 +16,8 @@ def get_residue_atomidx(pocket_atoms_idx, prot):
         residue = atom.getResidue()
         atoms_idx.extend(residue.getAtomIndices())
     atoms_idx = list(set(atoms_idx))
-    atoms_idx = sorted(atoms_idx,  reverse=False)
-    return atoms_idx
+    return sorted(atoms_idx, reverse=False)
+
 
 def get_pocket(protein_file, ligand_file, pocket_file):
     prot = next(StructureReader(protein_file))
@@ -31,9 +31,11 @@ def get_pocket(protein_file, ligand_file, pocket_file):
         writer.append(pocket)
     return
 
-if __name__=="__main__":
+
+if __name__ == "__main__":
     import sys
-    protein_file=sys.argv[1]
-    ligand_file=sys.argv[2]
-    pocket_file=sys.argv[3]
+
+    protein_file = sys.argv[1]
+    ligand_file = sys.argv[2]
+    pocket_file = sys.argv[3]
     get_pocket(protein_file, ligand_file, pocket_file)

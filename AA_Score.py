@@ -1,16 +1,14 @@
-from interaction_components.plinteraction import get_interactions
+import argparse
+import os
+
 import numpy as np
-
 from rdkit import Chem
-from rdkit.Chem import AllChem
 
+from interaction_components.plinteraction import get_interactions
+from utils.electrostatic import Electrostatic
 from utils.hbonds import calc_hbond_strength
 from utils.hydrophobic import calc_hydrophobic
 from utils.vdw import calc_vdw
-from utils.electrostatic import Electrostatic
-import os
-import sys
-import argparse
 
 residue_names = [
     "HIS",
@@ -32,23 +30,21 @@ residue_names = [
     "ILE",
     "TRP",
     "PRO",
-    "VAL"]
+    "VAL",
+]
 
 
 def is_sidechain(atom):
     res = atom.GetPDBResidueInfo()
     atom_name = res.GetName().strip(" ")
-    if atom_name in ("C", "CA", "N", "O", "H"):
-        return False
-    else:
-        return True
+    return atom_name not in ("C", "CA", "N", "O", "H")
 
 
 def create_dict():
     interaction_dict = {}
     for name in residue_names:
-        interaction_dict.update({name + "_side": 0})
-        interaction_dict.update({name + "_main": 0})
+        interaction_dict[f"{name}_side"] = 0
+        interaction_dict[f"{name}_main"] = 0
     return interaction_dict
 
 
@@ -61,10 +57,7 @@ def calc_hb(hbonds, hb_dict):
             restype = "HIS"
         if restype == "ACE":
             continue
-        if sidechain:
-            key = restype + "_side"
-        else:
-            key = restype + "_main"
+        key = f"{restype}_side" if sidechain else f"{restype}_main"
         hb_dict[key] += energy
     return
 
@@ -86,10 +79,7 @@ def calc_hydrophybic_descriptor(interactions):
             restype = "HIS"
         if restype == "ACE":
             continue
-        if sidechain:
-            key = restype + "_side"
-        else:
-            key = restype + "_main"
+        key = f"{restype}_side" if sidechain else f"{restype}_main"
         hc_dict[key] += energy
     return hc_dict
 
@@ -105,8 +95,8 @@ def calc_vdw_descriptor(result, mol_lig):
             restype = "HIS"
         if restype not in residue_names:
             continue
-        vdw_dict[restype + "_side"] += main_vdw
-        vdw_dict[restype + "_main"] += side_vdw
+        vdw_dict[f"{restype}_side"] += main_vdw
+        vdw_dict[f"{restype}_main"] += side_vdw
     return vdw_dict
 
 
@@ -122,26 +112,12 @@ def calc_ele_descriptor(result, mol_lig, mol_prot):
             restype = "HIS"
         if restype not in residue_names:
             continue
-        ele_same_dict[restype + "_side"] += ele.side_ele_same
-        ele_same_dict[restype + "_main"] += ele.main_ele_same
+        ele_same_dict[f"{restype}_side"] += ele.side_ele_same
+        ele_same_dict[f"{restype}_main"] += ele.main_ele_same
 
-        ele_opposite_dict[restype + "_side"] += ele.side_ele_opposite
-        ele_opposite_dict[restype + "_main"] += ele.main_ele_opposite
+        ele_opposite_dict[f"{restype}_side"] += ele.side_ele_opposite
+        ele_opposite_dict[f"{restype}_main"] += ele.main_ele_opposite
     return ele_same_dict, ele_opposite_dict
-
-
-def calc_desolvation_descriptor(result, mol_prot, mol_lig):
-    dehyd = Dehydration(mol_prot, mol_lig)
-    prot = result.prot
-
-    dehyd_energy = 0
-    origin = "protein"
-    for at in mol_prot.GetAtoms():
-        dehyd_energy += dehyd.calc_atom_dehyd(at, origin)
-    origin = "ligand"
-    for at in mol_lig.GetAtoms():
-        dehyd_energy += dehyd.calc_atom_dehyd(at, origin)
-    return dehyd_energy
 
 
 def calc_metal_complexes(metal):
@@ -176,25 +152,22 @@ def calc_pistacking_descriptor(interactions):
 
 def calc_pication_laro(interactions):
     pic_dict = create_dict()
+    energy = -1
     for pic in interactions.pication_laro:
         restype = pic.restype
         sidechain = is_sidechain(pic.charge.atoms[0])
-        energy = -1
         if restype[:2] == "HI" and restype not in residue_names:
             restype = "HIS"
         if restype == "ACE":
             continue
-        if sidechain:
-            key = restype + "_side"
-        else:
-            key = restype + "_main"
+        key = f"{restype}_side" if sidechain else f"{restype}_main"
         pic_dict[key] += energy
     return pic_dict
 
 
 def calc_pication_descriptor(interactions):
-    paro_pication_energy, laro_pication_energy = 0, 0
-    for pic in interactions.pication_paro:
+    paro_pication_energy = 0
+    for _ in interactions.pication_paro:
         paro_pication_energy += -1
     pic_dict = calc_pication_laro(interactions)
     return paro_pication_energy, pic_dict
@@ -206,39 +179,42 @@ class Model:
 
     def predict(self, data):
         data = np.array(data)
-        return np.sum(self.arr * data)-0.999
+        return np.sum(self.arr * data) - 0.999
 
 
 def load_model():
     param = np.load("models/model-final.npy")
-    clf = Model(param)
-    return clf
+    return Model(param)
 
 
 def merge_descriptors(
-        hb_dict,
-        hc_dict,
-        vdw_dict,
-        ele_same_dict,
-        ele_opposite_dict,
-        pic_dict,
-        metal_ligand,
-        tpp_energy,
-        ppp_energy,
-        ppc_energy,
-        rotat):
+    hb_dict,
+    hc_dict,
+    vdw_dict,
+    ele_same_dict,
+    ele_opposite_dict,
+    pic_dict,
+    metal_ligand,
+    tpp_energy,
+    ppp_energy,
+    ppc_energy,
+    rotat,
+):
     line = []
     descriptors = [hb_dict, vdw_dict, ele_same_dict, ele_opposite_dict]
     for des in descriptors:
-        for v in des.values():
-            line.append(v)
-    line.append(sum(hc_dict.values()))
-    line.append(sum(pic_dict.values()))
-    line.append(metal_ligand)
-    line.append(tpp_energy)
-    line.append(ppp_energy)
-    line.append(ppc_energy)
-    line.append(rotat)
+        line.extend(iter(des.values()))
+    line.extend(
+        (
+            sum(hc_dict.values()),
+            sum(pic_dict.values()),
+            metal_ligand,
+            tpp_energy,
+            ppp_energy,
+            ppc_energy,
+            rotat,
+        )
+    )
     descriptors = np.array(line)
     return descriptors
 
@@ -250,8 +226,7 @@ def calc_score(mol_lig, mol_prot, clf):
     hb_dict = calc_hbonds_descriptor(interactions)
     hc_dict = calc_hydrophybic_descriptor(interactions)
     vdw_dict = calc_vdw_descriptor(result, mol_lig)
-    ele_same_dict, ele_opposite_dict = calc_ele_descriptor(
-        result, mol_lig, mol_prot)
+    ele_same_dict, ele_opposite_dict = calc_ele_descriptor(result, mol_lig, mol_prot)
     metal_ligand = calc_metal_descriptor(interactions)
     tpp_energy, ppp_energy = calc_pistacking_descriptor(interactions)
     ppc_energy, pic_dict = calc_pication_descriptor(interactions)
@@ -268,13 +243,14 @@ def calc_score(mol_lig, mol_prot, clf):
         tpp_energy,
         ppp_energy,
         ppc_energy,
-        rotat)
-    score = clf.predict(descriptors)
-    return score
+        rotat,
+    )
+    return clf.predict(descriptors)
+
 
 def get_format(ligand_file):
-    file_format = os.path.basename( ligand_file ).split(".")[1]
-    return file_format
+    return os.path.basename(ligand_file).split(".")[1]
+
 
 def calc_batch(mol_prot, mol_ligs, output_file, clf):
     for mol_lig in mol_ligs:
@@ -285,19 +261,9 @@ def calc_batch(mol_prot, mol_ligs, output_file, clf):
             with open(output_file, "a") as f:
                 f.write(name + "\t" + str(score) + "\n")
         else:
-            print( name, score )
+            print(name, score)
     return
 
-def calc_single(mol_prot, mol_lig, output_file, clf):
-    name = mol_lig.GetProp("_Name")
-    score = calc_score(mol_lig, mol_prot, clf)
-
-    if output_file:
-        with open(output_file, "a") as f:
-            f.write(name + "\t" + str(score) + "\n")
-    else:
-        print( name, score )
-    return
 
 def calc_single(mol_prot, mol_lig, output_file, clf):
     if not mol_lig:
@@ -309,12 +275,13 @@ def calc_single(mol_prot, mol_lig, output_file, clf):
         with open(output_file, "a") as f:
             f.write(name + "\t" + str(score) + "\n")
     else:
-        print( name, score )
+        print(name, score)
     return
+
 
 def predict_dG(mol_prot, mol_lig, output_file=None):
     clf = load_model()
-    
+
     name = mol_lig.GetProp("_Name")
     score = calc_score(mol_lig, mol_prot, clf)
 
@@ -324,21 +291,28 @@ def predict_dG(mol_prot, mol_lig, output_file=None):
     else:
         return name, score
 
+
 def func():
-    parser = argparse.ArgumentParser(description='parse AA Score prediction parameters')
-    parser.add_argument('--Rec', type=str, help='the file of binding pocket, only support PDB format')
-    parser.add_argument('--Lig', type=str, help='the file of ligands, support mol2, mol, sdf, PDB')
-    parser.add_argument('--Out', type=str, help='the output file for recording scores', default=None)
+    parser = argparse.ArgumentParser(description="parse AA Score prediction parameters")
+    parser.add_argument(
+        "--Rec", type=str, help="the file of binding pocket, only support PDB format"
+    )
+    parser.add_argument(
+        "--Lig", type=str, help="the file of ligands, support mol2, mol, sdf, PDB"
+    )
+    parser.add_argument(
+        "--Out", type=str, help="the output file for recording scores", default=None
+    )
     args = parser.parse_args()
     protein_file = args.Rec
     ligand_file = args.Lig
     output_file = args.Out
-    
+
     clf = load_model()
     mol_prot = Chem.MolFromPDBFile(protein_file, removeHs=False)
     lig_format = get_format(ligand_file)
     if lig_format not in ["sdf", "mol2", "mol", "pdb"]:
-        raise RuntimeError("ligand format {} is not supported".format(lig_format))
+        raise RuntimeError(f"ligand format {lig_format} is not supported")
 
     if lig_format == "sdf":
         mol_ligs = Chem.SDMolSupplier(ligand_file, removeHs=False)
@@ -353,6 +327,7 @@ def func():
         mol_lig = Chem.MolFromPDBFile(ligand_file, removeHs=False)
         calc_single(mol_prot, mol_lig, output_file, clf)
     return
+
 
 if __name__ == "__main__":
     func()

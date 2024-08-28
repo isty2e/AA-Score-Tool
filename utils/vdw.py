@@ -1,21 +1,33 @@
 import numpy as np
-from scipy.spatial.distance import  cdist, euclidean
-from rdkit.Chem import AllChem
+from scipy.spatial.distance import cdist
 
-atom_radius = {"N": 1.8, "O": 1.7, "S": 2.0, "P": 2.1, "F": 1.5, "Cl": 1.8,
-               "Br": 2.0, "I": 2.2, "C": 1.9, "H": 0.0, "Zn": 0.5, "B": 1.8}
+atom_radius = {
+    "N": 1.8,
+    "O": 1.7,
+    "S": 2.0,
+    "P": 2.1,
+    "F": 1.5,
+    "Cl": 1.8,
+    "Br": 2.0,
+    "I": 2.2,
+    "C": 1.9,
+    "H": 0.0,
+    "Zn": 0.5,
+    "B": 1.8,
+}
 
 
 def get_mol_coords(mol):
     conf = mol.GetConformers()[0]
-    coords = conf.GetPositions()
-    return coords
+    return conf.GetPositions()
+
 
 def get_atom_coords(atom):
     mol = atom.GetOwningMol()
     conf = mol.GetConformers()[0]
     pos = conf.GetAtomPosition(atom.GetIdx())
     return (pos.x, pos.y, pos.z)
+
 
 def get_atoms_coords(atoms):
     coords = np.zeros((len(atoms), 3))
@@ -24,13 +36,15 @@ def get_atoms_coords(atoms):
         coords[idx, :] = coord
     return coords
 
+
 def accelerate_vdw(d0_matrix, dist_matrix):
-    vdw = np.sum(np.power((d0_matrix / dist_matrix), 8) - 2 * np.power((d0_matrix / dist_matrix), 4))
-    return vdw
+    return np.sum(
+        np.power((d0_matrix / dist_matrix), 8)
+        - 2 * np.power((d0_matrix / dist_matrix), 4)
+    )
+
 
 def get_d0_matrix(atoms, mol_lig):
-    atom_radius_keys =  atom_radius.keys()
-
     residue_symbols = [a.GetSymbol() for a in atoms]
     ligand_symbols = [a.GetSymbol() for a in mol_lig.GetAtoms()]
 
@@ -41,20 +55,19 @@ def get_d0_matrix(atoms, mol_lig):
             d0_matrix[idxp, idxl] = d0
     return d0_matrix
 
+
 def is_sidechain(atom):
     res = atom.GetPDBResidueInfo()
     atom_name = res.GetName().strip(" ")
-    if atom_name in ("C", "CA", "N", "O", "H"):
-        return False
-    else:
-        return True
+    return atom_name not in ("C", "CA", "N", "O", "H")
+
 
 def calc_vdw_chain(atoms, lig_coords, mol_lig):
     atoms_coords = get_atoms_coords(atoms)
-    dist_matrix = cdist(atoms_coords, lig_coords, 'euclidean')
+    dist_matrix = cdist(atoms_coords, lig_coords, "euclidean")
     d0_matrix = get_d0_matrix(atoms, mol_lig)
-    vdw = accelerate_vdw(d0_matrix, dist_matrix)
-    return vdw
+    return accelerate_vdw(d0_matrix, dist_matrix)
+
 
 def calc_vdw(residue, mol_lig):
     residue_atoms = [a for a in residue.residue_atoms if a.GetAtomicNum() != 1]
@@ -65,9 +78,8 @@ def calc_vdw(residue, mol_lig):
         else:
             main_atoms.append(atom)
 
-    #mol_lig = AllChem.RemoveHs(mol_lig)
+    # mol_lig = AllChem.RemoveHs(mol_lig)
     lig_coords = get_mol_coords(mol_lig)
     side_vdw = calc_vdw_chain(side_atoms, lig_coords, mol_lig)
     main_vdw = calc_vdw_chain(main_atoms, lig_coords, mol_lig)
     return main_vdw, side_vdw
-

@@ -1,10 +1,15 @@
-from rdkit import Chem
-from rdkit.Chem import AllChem
+import gzip
 import itertools
-from interaction_components import config
-import numpy as np
+import os
+import re
+import tempfile
+import zipfile
 from collections import namedtuple
+
+import numpy as np
 from scipy.spatial.distance import euclidean
+
+from interaction_components import config
 
 atom_prop_dict = config.atom_prop_dict
 biolip_list = config.biolip_list
@@ -16,7 +21,7 @@ def normalize_vector(v):
     :returns : normalized vector v
     """
     norm = np.linalg.norm(v)
-    return v / norm if not norm == 0 else v
+    return v / norm if norm != 0 else v
 
 
 def whichrestype(atom):
@@ -41,19 +46,14 @@ def whichchain(atom):
 
 def euclidean3d(v1, v2):
     """Faster implementation of euclidean distance for the 3D case."""
-    if not (len(v1) == 3 and len(v2) == 3):
-        return None
-    return euclidean(v1, v2)
+    return None if len(v1) != 3 or len(v2) != 3 else euclidean(v1, v2)
     # return np.sqrt((v1[0] - v2[0]) ** 2 + (v1[1] - v2[1]) ** 2 + (v1[2] -
     # v2[2]) ** 2)
 
 
 def is_aromatic(r_atoms):
     for atom in r_atoms:
-        if atom.GetIsAromatic():
-            return True
-        else:
-            return False
+        return bool(atom.GetIsAromatic())
 
 
 def vector(p1, p2):
@@ -62,8 +62,11 @@ def vector(p1, p2):
     :param p2: coordinates of point p2
     :returns : numpy array with vector coordinates
     """
-    return None if len(p1) != len(p2) else np.array(
-        [p2[i] - p1[i] for i in range(len(p1))])
+    return (
+        None
+        if len(p1) != len(p2)
+        else np.array([p2[i] - p1[i] for i in range(len(p1))])
+    )
 
 
 def vecangle(v1, v2, deg=True):
@@ -78,7 +81,15 @@ def vecangle(v1, v2, deg=True):
     dm = np.dot(v1, v2)
     cm = np.linalg.norm(v1) * np.linalg.norm(v2)
     angle = np.arccos(dm / cm)  # Round here to prevent floating point errors
-    return np.degrees([angle, ])[0] if deg else angle
+    return (
+        np.degrees(
+            [
+                angle,
+            ]
+        )[0]
+        if deg
+        else angle
+    )
 
 
 def centroid(coo):
@@ -86,10 +97,12 @@ def centroid(coo):
     :param coo: Array of coordinate arrays
     :returns : centroid coordinates as list
     """
-    return list(map(np.mean,
-                    (([c[0] for c in coo]),
-                     ([c[1] for c in coo]),
-                        ([c[2] for c in coo]))))
+    return list(
+        map(
+            np.mean,
+            (([c[0] for c in coo]), ([c[1] for c in coo]), ([c[2] for c in coo])),
+        )
+    )
 
 
 def get_atom_coords(atom):
@@ -122,8 +135,7 @@ def ring_is_planar(mol_conf, ring, r_atoms):
 
         adj = a.GetNeighbors()
         # Check for neighboring atoms in the ring
-        n_neighs_idx = [neigh.GetIdx()
-                        for neigh in adj if neigh.GetIdx() in ring]
+        n_neighs_idx = [neigh.GetIdx() for neigh in adj if neigh.GetIdx() in ring]
         n_coords = get_coords(mol_conf, n_neighs_idx)
         vec1, vec2 = vector(a_coord, n_coords[0]), vector(a_coord, n_coords[1])
         normals.append(np.cross(vec1, vec2))
@@ -131,8 +143,12 @@ def ring_is_planar(mol_conf, ring, r_atoms):
     # any has to be 5.0 deg or less
     for n1, n2 in itertools.product(normals, repeat=2):
         arom_angle = vecangle(n1, n2)
-        if all([arom_angle > config.AROMATIC_PLANARITY,
-                arom_angle < 180.0 - config.AROMATIC_PLANARITY]):
+        if all(
+            [
+                arom_angle > config.AROMATIC_PLANARITY,
+                arom_angle < 180.0 - config.AROMATIC_PLANARITY,
+            ]
+        ):
             return False
     return True
 
@@ -144,19 +160,18 @@ def residue_order(mol):
         res_num = res.GetResidueNumber()
         res_name = res.GetResidueName()
         res_chain = res.GetChainId()
-        key = str(res_num) + "_" + res_name + "_" + res_chain
+        key = f"{str(res_num)}_{res_name}_{res_chain}"
         residue_dict.setdefault(key, [])
         residue_dict[key].append(atom)
 
     data = namedtuple(
-        'residue',
-        'residue_number residue_name residue_chain residue_atoms')
+        "residue", "residue_number residue_name residue_chain residue_atoms"
+    )
     residues = []
     for key, value in residue_dict.items():
         atoms = value
         residue_number = int(key.split("_")[0])
-        residue_name = list(
-            set([a.GetPDBResidueInfo().GetResidueName() for a in atoms]))
+        residue_name = list({a.GetPDBResidueInfo().GetResidueName() for a in atoms})
         residue_chain = key.split("_")[2]
         if len(residue_name) != 1:
             raise RuntimeError("get residue iterator error")
@@ -165,17 +180,16 @@ def residue_order(mol):
                 residue_number=residue_number,
                 residue_name=residue_name[0],
                 residue_chain=residue_chain,
-                residue_atoms=atoms))
+                residue_atoms=atoms,
+            )
+        )
     return residues
 
 
 def is_sidechain(atom):
     res = atom.GetPDBResidueInfo()
     atom_name = res.GetName().strip(" ")
-    if atom_name in ("C", "CA", "N", "O", "H"):
-        return False
-    else:
-        return True
+    return atom_name not in ("C", "CA", "N", "O", "H")
 
 
 def projection(pnormal1, ppoint, tpoint):
@@ -199,34 +213,32 @@ def projection(pnormal1, ppoint, tpoint):
 
 def tilde_expansion(folder_path):
     """Tilde expansion, i.e. converts '~' in paths into <value of $HOME>."""
-    return os.path.expanduser(
-        folder_path) if '~' in folder_path else folder_path
+    return os.path.expanduser(folder_path) if "~" in folder_path else folder_path
 
 
 def tmpfile(prefix, direc):
     """Returns the path to a newly created temporary file."""
-    return tempfile.mktemp(prefix=prefix, suffix='.pdb', dir=direc)
+    return tempfile.mktemp(prefix=prefix, suffix=".pdb", dir=direc)
 
 
 def classify_by_name(names):
     """Classify a (composite) ligand by the HETID(s)"""
     if len(names) > 3:  # Polymer
-        if len(set(config.RNA).intersection(set(names))) != 0:
-            ligtype = 'RNA'
+        if set(config.RNA).intersection(set(names)):
+            ligtype = "RNA"
         elif len(set(config.DNA).intersection(set(names))) != 0:
-            ligtype = 'DNA'
+            ligtype = "DNA"
         else:
             ligtype = "POLYMER"
     else:
-        ligtype = 'SMALLMOLECULE'
+        ligtype = "SMALLMOLECULE"
 
     for name in names:
         if name in config.METAL_IONS:
             if len(names) == 1:
-                ligtype = 'ION'
-            else:
-                if "ION" not in ligtype:
-                    ligtype += '+ION'
+                ligtype = "ION"
+            elif "ION" not in ligtype:
+                ligtype += "+ION"
     return ligtype
 
 
@@ -245,14 +257,14 @@ def cluster_doubles(double_list):
             if location[a] != location[b]:
                 if location[a] < location[b]:
                     clusters[location[a]] = clusters[location[a]].union(
-                        clusters[location[b]])  # Merge clusters
-                    clusters = clusters[:location[b]] + \
-                        clusters[location[b] + 1:]
+                        clusters[location[b]]
+                    )  # Merge clusters
+                    clusters = clusters[: location[b]] + clusters[location[b] + 1 :]
                 else:
                     clusters[location[b]] = clusters[location[b]].union(
-                        clusters[location[a]])  # Merge clusters
-                    clusters = clusters[:location[a]] + \
-                        clusters[location[a] + 1:]
+                        clusters[location[a]]
+                    )  # Merge clusters
+                    clusters = clusters[: location[a]] + clusters[location[a] + 1 :]
                 # Rebuild index of locations for each element as they have
                 # changed now
                 location = {}
@@ -270,7 +282,7 @@ def cluster_doubles(double_list):
                 location[a] = location[b]
             # If neither a nor b is in any cluster, create a new one with a and
             # b
-            if not (b in location and a in location):
+            if b not in location or a not in location:
                 clusters.append(set(t))
                 location[a] = len(clusters) - 1
                 location[b] = len(clusters) - 1
@@ -280,7 +292,7 @@ def cluster_doubles(double_list):
 def is_lig(hetid):
     """Checks if a PDB compound can be excluded as a small molecule ligand"""
     h = hetid.upper()
-    return not (h == 'HOH' or h in config.UNSUPPORTED)
+    return h != "HOH" and h not in config.UNSUPPORTED
 
 
 def extract_pdbid(string):
@@ -293,70 +305,15 @@ def extract_pdbid(string):
         return "UnknownProtein"
 
 
-def read_pdb(pdbfname, as_string=False):
-    """Reads a given PDB file and returns a Pybel Molecule."""
-    pybel.ob.obErrorLog.StopLogging()  # Suppress all OpenBabel warnings
-    if os.name != 'nt':  # Resource module not available for Windows
-        maxsize = resource.getrlimit(resource.RLIMIT_STACK)[-1]
-        resource.setrlimit(
-            resource.RLIMIT_STACK, (min(
-                2 ** 28, maxsize), maxsize))
-    sys.setrecursionlimit(10 ** 5)  # increase Python recursion limit
-    return readmol(pdbfname, as_string=as_string)
-
-
-def create_folder_if_not_exists(folder_path):
-    """Creates a folder if it does not exists."""
-    folder_path = tilde_expansion(folder_path)
-    folder_path = "".join(
-        [folder_path, '/']) if not folder_path[-1] == '/' else folder_path
-    direc = os.path.dirname(folder_path)
-    if not folder_exists(direc):
-        os.makedirs(direc)
-
-
-def canonicalize(lig, preserve_bond_order=False):
-    """Get the canonical atom order for the ligand."""
-    atomorder = None
-    # Get canonical atom order
-
-    lig = pybel.ob.OBMol(lig.OBMol)
-    if not preserve_bond_order:
-        for bond in pybel.ob.OBMolBondIter(lig):
-            if bond.GetBondOrder() != 1:
-                bond.SetBondOrder(1)
-    lig.DeleteData(pybel.ob.StereoData)
-    lig = pybel.Molecule(lig)
-    testcan = lig.write(format='can')
-    try:
-        pybel.readstring('can', testcan)
-        reference = pybel.readstring('can', testcan)
-    except IOError:
-        testcan, reference = '', ''
-    if testcan != '':
-        reference.removeh()
-        # isomorphs now holds all isomorphisms within the molecule
-        isomorphs = get_isomorphisms(reference, lig)
-        if not len(isomorphs) == 0:
-            smi_dict = {}
-            smi_to_can = isomorphs[0]
-            for x in smi_to_can:
-                smi_dict[int(x[1]) + 1] = int(x[0]) + 1
-            atomorder = [smi_dict[x + 1] for x in range(len(lig.atoms))]
-        else:
-            atomorder = None
-    return atomorder
-
-
 def read(fil):
     """Returns a file handler and detects gzipped files."""
-    if os.path.splitext(fil)[-1] == '.gz':
-        return gzip.open(fil, 'rb')
-    elif os.path.splitext(fil)[-1] == '.zip':
-        zf = zipfile.ZipFile(fil, 'r')
+    if os.path.splitext(fil)[-1] == ".gz":
+        return gzip.open(fil, "rb")
+    elif os.path.splitext(fil)[-1] == ".zip":
+        zf = zipfile.ZipFile(fil, "r")
         return zf.open(zf.infolist()[0].filename)
     else:
-        return open(fil, 'r')
+        return open(fil, "r")
 
 
 def nucleotide_linkage(residues):
@@ -366,23 +323,22 @@ def nucleotide_linkage(residues):
     #######################################
     # Basic support for RNA/DNA as ligand #
     #######################################
-    nucleotides = ['A', 'C', 'T', 'G', 'U', 'DA', 'DC', 'DT', 'DG', 'DU']
+    nucleotides = ["A", "C", "T", "G", "U", "DA", "DC", "DT", "DG", "DU"]
     dna_rna = {}  # Dictionary of DNA/RNA residues by chain
-    covlinkage = namedtuple(
-        "covlinkage",
-        "id1 chain1 pos1 conf1 id2 chain2 pos2 conf2")
+    covlinkage = namedtuple("covlinkage", "id1 chain1 pos1 conf1 id2 chain2 pos2 conf2")
     # Create missing covlinkage entries for DNA/RNA
     for ligand in residues:
         resname, chain, pos = ligand
         if resname in nucleotides:
             if chain not in dna_rna:
-                dna_rna[chain] = [(resname, pos), ]
+                dna_rna[chain] = [
+                    (resname, pos),
+                ]
             else:
                 dna_rna[chain].append((resname, pos))
-    for chain in dna_rna:
-        nuc_list = dna_rna[chain]
+    for chain, nuc_list in dna_rna.items():
         for i, nucleotide in enumerate(nuc_list):
-            if not i == len(nuc_list) - 1:
+            if i != len(nuc_list) - 1:
                 name, pos = nucleotide
                 nextnucleotide = nuc_list[i + 1]
                 nextname, nextpos = nextnucleotide
@@ -390,11 +346,12 @@ def nucleotide_linkage(residues):
                     id1=name,
                     chain1=chain,
                     pos1=pos,
-                    conf1='',
+                    conf1="",
                     id2=nextname,
                     chain2=chain,
                     pos2=nextpos,
-                    conf2='')
+                    conf2="",
+                )
                 nuc_covalent.append(newlink)
 
     return nuc_covalent
@@ -416,16 +373,11 @@ def int32_to_negative(int32):
     """Checks if a suspicious number (e.g. ligand position) is in fact a negative number represented as a
     32 bit integer and returns the actual number.
     """
-    dct = {}
     # Special case in some structures (note, this is just a workaround)
     if int32 == 4294967295:
         return -1
-    for i in range(-1000, -1):
-        dct[np.uint32(i)] = i
-    if int32 in dct:
-        return dct[int32]
-    else:
-        return int32
+    dct = {np.uint32(i): i for i in range(-1000, -1)}
+    return dct.get(int32, int32)
 
 
 def is_donor(atom):
@@ -435,29 +387,23 @@ def is_donor(atom):
     atomname = whichatomname(atom)
     # if restype in biolip_list:
     #    return False
-    res_name = restype + "_" + atomname
+    res_name = f"{restype}_{atomname}"
     if res_name not in atom_prop_dict.keys():
         return False
     atom_prop = atom_prop_dict[res_name]
-    if "Donor" in atom_prop:
-        return True
-    else:
-        return False
+    return "Donor" in atom_prop
 
 
 def is_acceptor(atom):
-    if atom.GetSymbol() in["H", "C"]:
+    if atom.GetSymbol() in ["H", "C"]:
         return False
     restype = whichrestype(atom)
     if restype == "HIN":
         restype = "HIS"
     atomname = whichatomname(atom)
-    res_name = restype + "_" + atomname
+    res_name = f"{restype}_{atomname}"
     if res_name not in atom_prop_dict.keys():
-        #print("warning atom: idx {} res_name {}".format(atom.GetIdx(), res_name))
+        # print("warning atom: idx {} res_name {}".format(atom.GetIdx(), res_name))
         return False
     atom_prop = atom_prop_dict[res_name]
-    if "Acceptor" in atom_prop:
-        return True
-    else:
-        return False
+    return "Acceptor" in atom_prop
