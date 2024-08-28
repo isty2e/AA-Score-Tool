@@ -53,7 +53,7 @@ class PocketExtractor:
         self.protein_file = protein_file
         self.ligand_file = ligand_file
 
-        self.ligand_mol = Chem.MolFromMolFile(ligand_file, removeHs=False)
+        self.ligand_mol = Chem.MolFromMolFile(str(ligand_file), removeHs=False)
         self.pocket_mol = self._process_pro_and_lig()
 
     def save_pocket(self, output_path: Path) -> None:
@@ -61,7 +61,7 @@ class PocketExtractor:
 
     def _process_pro_and_lig(self):
         ppdb = PandasPdb()
-        ppdb.read_pdb(self.protein_file)
+        ppdb.read_pdb(str(self.protein_file))
         protein_biop = ppdb.df["ATOM"]
 
         pro_cut, _ = self._select_cut_residue(protein_biop, self.ligand_mol, cut=5.5)
@@ -72,7 +72,7 @@ class PocketExtractor:
             tmp_pdb = Path(tmp_dir) / "tmp.pdb"
             ppdb.to_pdb(path=str(tmp_pdb), records=["ATOM"])
 
-            return Chem.MolFromPDBFile(tmp_pdb, removeHs=False)
+            return Chem.MolFromPDBFile(str(tmp_pdb), removeHs=False)
 
     def _select_cut_residue(self, protein_biop, ligand_mol, cut=5.0):
         """

@@ -1,0 +1,237 @@
+import numpy as np
+from rdkit import Chem
+
+from interaction_components.plinteraction import get_interactions
+from utils.electrostatic import Electrostatic
+from utils.hbonds import calc_hbond_strength
+from utils.hydrophobic import calc_hydrophobic
+from utils.vdw import calc_vdw
+
+residue_names = [
+    "HIS",
+    "ASP",
+    "ARG",
+    "PHE",
+    "ALA",
+    "CYS",
+    "GLY",
+    "GLN",
+    "GLU",
+    "LYS",
+    "LEU",
+    "MET",
+    "ASN",
+    "SER",
+    "TYR",
+    "THR",
+    "ILE",
+    "TRP",
+    "PRO",
+    "VAL",
+]
+
+
+def is_sidechain(atom):
+    res = atom.GetPDBResidueInfo()
+    atom_name = res.GetName().strip(" ")
+    return atom_name not in ("C", "CA", "N", "O", "H")
+
+
+def create_dict():
+    interaction_dict = {}
+    for name in residue_names:
+        interaction_dict[f"{name}_side"] = 0
+        interaction_dict[f"{name}_main"] = 0
+    return interaction_dict
+
+
+def calc_hb(hbonds, hb_dict):
+    for hb in hbonds:
+        restype = hb.restype
+        sidechain = hb.sidechain
+        energy = calc_hbond_strength(hb)
+        if restype == "HIN":
+            restype = "HIS"
+        if restype == "ACE":
+            continue
+        key = f"{restype}_side" if sidechain else f"{restype}_main"
+        hb_dict[key] += energy
+    return
+
+
+def calc_hbonds_descriptor(interactions):
+    hb_dict = create_dict()
+    calc_hb(interactions.all_hbonds_ldon, hb_dict)
+    calc_hb(interactions.all_hbonds_pdon, hb_dict)
+    return hb_dict
+
+
+def calc_hydrophybic_descriptor(interactions):
+    hc_dict = create_dict()
+    for hc in interactions.hydrophobic_contacts:
+        restype = hc.restype
+        sidechain = hc.sidechain
+        energy = calc_hydrophobic(hc)
+        if restype[:2] == "HI" and restype not in residue_names:
+            restype = "HIS"
+        if restype == "ACE":
+            continue
+        key = f"{restype}_side" if sidechain else f"{restype}_main"
+        hc_dict[key] += energy
+    return hc_dict
+
+
+def calc_vdw_descriptor(result, mol_lig):
+    prot = result.prot
+    residues = prot.residues
+    vdw_dict = create_dict()
+    for res in residues:
+        main_vdw, side_vdw = calc_vdw(res, mol_lig)
+        restype = res.residue_name
+        if restype[:2] == "HI" and restype not in residue_names:
+            restype = "HIS"
+        if restype not in residue_names:
+            continue
+        vdw_dict[f"{restype}_side"] += main_vdw
+        vdw_dict[f"{restype}_main"] += side_vdw
+    return vdw_dict
+
+
+def calc_ele_descriptor(result, mol_lig, mol_prot):
+    prot = result.prot
+    residues = prot.residues
+    ele_same_dict = create_dict()
+    ele_opposite_dict = create_dict()
+    for res in residues:
+        ele = Electrostatic(res, mol_lig, mol_prot)
+        restype = res.residue_name
+        if restype[:2] == "HI" and restype not in residue_names:
+            restype = "HIS"
+        if restype not in residue_names:
+            continue
+        ele_same_dict[f"{restype}_side"] += ele.side_ele_same
+        ele_same_dict[f"{restype}_main"] += ele.main_ele_same
+
+        ele_opposite_dict[f"{restype}_side"] += ele.side_ele_opposite
+        ele_opposite_dict[f"{restype}_main"] += ele.main_ele_opposite
+    return ele_same_dict, ele_opposite_dict
+
+
+def calc_metal_complexes(metal):
+    dist = metal.distance
+    if dist < 2.0:
+        return -1.0
+    elif 2.0 <= dist < 3.0:
+        return -3.0 + dist
+    else:
+        return 0.0
+
+
+def calc_metal_descriptor(interactions):
+    ml_energy = 0
+    for ml in interactions.metal_complexes:
+        if ml.target.location != "ligand":
+            continue
+        energy = calc_metal_complexes(ml)
+        ml_energy += energy
+    return ml_energy
+
+
+def calc_pistacking_descriptor(interactions):
+    T_pistacking_energy, P_pistacking_energy = 0, 0
+    for pis in interactions.pistacking:
+        if pis.type == "T":
+            T_pistacking_energy += -1
+        else:
+            P_pistacking_energy += -1
+    return T_pistacking_energy, P_pistacking_energy
+
+
+def calc_pication_laro(interactions):
+    pic_dict = create_dict()
+    energy = -1
+    for pic in interactions.pication_laro:
+        restype = pic.restype
+        sidechain = is_sidechain(pic.charge.atoms[0])
+        if restype[:2] == "HI" and restype not in residue_names:
+            restype = "HIS"
+        if restype == "ACE":
+            continue
+        key = f"{restype}_side" if sidechain else f"{restype}_main"
+        pic_dict[key] += energy
+    return pic_dict
+
+
+def calc_pication_descriptor(interactions):
+    paro_pication_energy = 0
+    for _ in interactions.pication_paro:
+        paro_pication_energy += -1
+    pic_dict = calc_pication_laro(interactions)
+    return paro_pication_energy, pic_dict
+
+
+def merge_descriptors(
+    hb_dict,
+    hc_dict,
+    vdw_dict,
+    ele_same_dict,
+    ele_opposite_dict,
+    pic_dict,
+    metal_ligand,
+    tpp_energy,
+    ppp_energy,
+    ppc_energy,
+    rotat,
+):
+    line = []
+    descriptors = [hb_dict, vdw_dict, ele_same_dict, ele_opposite_dict]
+    for des in descriptors:
+        line.extend(iter(des.values()))
+    line.extend(
+        (
+            sum(hc_dict.values()),
+            sum(pic_dict.values()),
+            metal_ligand,
+            tpp_energy,
+            ppp_energy,
+            ppc_energy,
+            rotat,
+        )
+    )
+    descriptors = np.array(line)
+
+    return descriptors
+
+
+class AAScoreDescriptorCalculator:
+    def __init__(self):
+        pass
+
+    def run(self, protein_rdmol, ligand_rdmol):
+        result = get_interactions(protein_rdmol, ligand_rdmol)
+        interactions = result.interactions
+
+        hb_dict = calc_hbonds_descriptor(interactions)
+        hc_dict = calc_hydrophybic_descriptor(interactions)
+        vdw_dict = calc_vdw_descriptor(result, ligand_rdmol)
+        ele_same_dict, ele_opposite_dict = calc_ele_descriptor(
+            result, ligand_rdmol, protein_rdmol
+        )
+        metal_ligand = calc_metal_descriptor(interactions)
+        tpp_energy, ppp_energy = calc_pistacking_descriptor(interactions)
+        ppc_energy, pic_dict = calc_pication_descriptor(interactions)
+        rotat = Chem.rdMolDescriptors.CalcNumRotatableBonds(ligand_rdmol)
+
+        return merge_descriptors(
+            hb_dict,
+            hc_dict,
+            vdw_dict,
+            ele_same_dict,
+            ele_opposite_dict,
+            pic_dict,
+            metal_ligand,
+            tpp_energy,
+            ppp_energy,
+            ppc_energy,
+            rotat,
+        )
